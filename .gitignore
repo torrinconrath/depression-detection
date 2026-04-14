@@ -1,0 +1,22 @@
+# Environments
+venv/
+env/
+.env
+
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data and Models
+data/*
+!data/.gitkeep
+models/*
+*.safetensors
+*.bin
+
+# IDEs
+.vscode/
+.idea/
+*.swp
