@@ -6,3 +6,4 @@ peft
 pandas
 scikit-learn
 tqdm
+datasets
