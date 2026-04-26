@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--threshold", type=float, default=0.3,
                         help="Tier 1 depressive probability threshold (default: 0.3)")
     parser.add_argument("--tier1-model", type=str,
-                        default="mrm8488/distilroberta-finetuned-depression",
+                        default="mrm8488/distilroberta-base-finetuned-suicide-depression",
                         help="HuggingFace model ID for the Tier 1 sentinel filter")
     parser.add_argument("--adapter-path", type=str, default="models/tier2_adapter",
                         help="Path to the fine-tuned LoRA adapter for Tier 2")
