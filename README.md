@@ -22,6 +22,7 @@ All posts → [Tier 1: DistilRoBERTa Filter] → flagged posts → [Tier 2: Llam
 ```
 .
 ├── main.py                  # Pipeline entry point
+├── check_token_lengths.py                  # Ideal length script
 ├── requirements.txt
 ├── data/
 │   ├── dsd.csv              # Full dataset (text, label)
