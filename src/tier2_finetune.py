@@ -21,8 +21,8 @@ from src.constants import BASE_MODEL_ID, ORDINAL_ORDER, SYSTEM_PROMPT, COT_STUBS
 CONFIG = {
     "train_csv":   "data/train.csv",
     "output_dir":  "models/tier2_adapter",
-    "epochs":      2,
-    "max_seq_len": 1024,
+    "epochs":      3,
+    "max_seq_len": 384, # used check_token_length to find max ideal
 }
 
 
@@ -91,8 +91,8 @@ def finetune() -> None:
         args=TrainingArguments(
             output_dir=CONFIG["output_dir"],
             num_train_epochs=CONFIG["epochs"],
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=16,
+            per_device_train_batch_size=4,
+            gradient_accumulation_steps=4,
             learning_rate=1e-4,
             fp16=True,
             logging_steps=10,
@@ -116,4 +116,3 @@ def finetune() -> None:
 if __name__ == "__main__":
     print("=" * 52 + "\n  Tier 2 LLM Finetuning\n" + "=" * 52)
     finetune()
-    
