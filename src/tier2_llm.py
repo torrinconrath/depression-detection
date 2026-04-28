@@ -1,63 +1,47 @@
 """
-tier2_llm.py
+tier2_llm.py  —  Tier 2 LLM inference using the QLoRA fine-tuned adapter.
 
-Tier 2 LLM Reasoning Engine — inference using the QLoRA fine-tuned adapter.
-
-Loads the fine-tuned LoRA adapter produced by tier2_finetune.py and runs
-Chain-of-Thought depression severity classification on Tier 1 filtered posts.
+Loads the LoRA adapter produced by tier2_finetune.py and runs Chain-of-Thought
+depression severity classification on posts that passed the Tier 1 filter.
 """
 
 import re
-
 import pandas as pd
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-BASE_MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-DEFAULT_ADAPTER_PATH = "models/tier2_adapter"
-
-VALID_LABELS = ["minimal", "mild", "moderate", "severe"]
-
-SYSTEM_PROMPT = """You are an expert clinical psychologist specialising in depression assessment.
-Analyse the social media post below and classify the author's depression severity.
-
-First provide step-by-step clinical reasoning citing specific evidence from the post.
-Then state the final label.
-
-Severity scale:
-- Minimal: Little to no depressive indicators. Normal daily functioning.
-- Mild: Occasional low mood or stress. Some negative affect but generally coping.
-- Moderate: Persistent low mood, loss of interest, some functional impairment.
-- Severe: Intense hopelessness, anhedonia, significant impairment, possible suicidal ideation.
-
-Response format (follow exactly):
-Reasoning: <2-4 sentences of clinical reasoning>
-Label: <Minimal|Mild|Moderate|Severe>"""
+# ── Shared constants (must match tier2_finetune.py) ───────────────────────────
+BASE_MODEL_ID  = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+ORDINAL_ORDER  = ["minimal", "mild", "moderate", "severe"]
+SYSTEM_PROMPT  = (
+    "You are an expert clinical psychologist specialising in depression assessment.\n"
+    "Analyse the social media post below and classify the author's depression severity.\n\n"
+    "First provide step-by-step clinical reasoning citing specific evidence from the post.\n"
+    "Then state the final label.\n\n"
+    "Severity scale:\n"
+    "- Minimal:  Little to no depressive indicators. Normal daily functioning.\n"
+    "- Mild:     Occasional low mood or stress. Some negative affect but generally coping.\n"
+    "- Moderate: Persistent low mood, loss of interest, some functional impairment.\n"
+    "- Severe:   Intense hopelessness, anhedonia, significant impairment, possible suicidal ideation.\n\n"
+    "Response format (follow exactly):\n"
+    "Reasoning: <2-4 sentences of clinical reasoning>\n"
+    "Label: <Minimal|Mild|Moderate|Severe>"
+)
 
 
 class Tier2ReasoningEngine:
-    def __init__(
-        self,
-        adapter_path: str = DEFAULT_ADAPTER_PATH,
-        base_model_id: str = BASE_MODEL_ID,
-    ):
+    def __init__(self, adapter_path: str = "models/tier2_adapter"):
         """
-        Loads the fine-tuned QLoRA adapter on top of the Llama 3.1-8B base model.
-
-        The adapter is produced by tier2_finetune.py. Run that script first.
-
-        Args:
-            adapter_path:   Path to the saved LoRA adapter directory.
-            base_model_id:  HuggingFace ID of the base model (must match training).
+        Loads the QLoRA fine-tuned adapter on top of the frozen 4-bit base model.
+        Run tier2_finetune.py first to produce the adapter.
         """
         if not torch.cuda.is_available():
             raise EnvironmentError(
-                "[Tier 2] A CUDA GPU is required for 4-bit inference. "
+                "[Tier 2] A CUDA GPU is required. "
                 "Ensure you are running on a GPU machine."
             )
 
-        print(f"[Tier 2] Loading base model: {base_model_id}")
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -65,120 +49,82 @@ class Tier2ReasoningEngine:
             bnb_4bit_use_double_quant=True,
         )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.tokenizer.padding_side = "left"  # Required for batch generation
+        print(f"[Tier 2] Loading base model: {BASE_MODEL_ID}")
+        self.tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID)
+        self.tokenizer.pad_token    = self.tokenizer.eos_token
+        self.tokenizer.padding_side = "left"
 
         base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_id,
-            quantization_config=bnb_config,
-            device_map="auto",
+            BASE_MODEL_ID, quantization_config=bnb_config, device_map="auto"
         )
 
-        print(f"[Tier 2] Loading fine-tuned adapter from: {adapter_path}")
+        print(f"[Tier 2] Loading adapter: {adapter_path}")
         self.model = PeftModel.from_pretrained(base_model, adapter_path)
         self.model.eval()
-        print("[Tier 2] Tier 2 engine ready.")
-
-    # ── Inference ──────────────────────────────────────────────────────────────
-
-    def _build_prompt(self, text: str) -> str:
-        """Formats a single post into the inference prompt using the Llama 3 chat template."""
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Post: \"{text}\""},
-        ]
-        # apply_chat_template adds the correct special tokens for Llama 3 instruct
-        return self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=False,
-        )
+        print("[Tier 2] Ready.")
 
     def _parse_label(self, response: str) -> str:
-        """
-        Extracts the severity label from the model's raw output.
-        Searches for 'Label: <value>' first, then falls back to scanning
-        the full response for any valid label word.
-        """
+        """Extracts the severity label from the model response. Falls back to scanning full text."""
         match = re.search(r"label\s*:\s*(\w+)", response, re.IGNORECASE)
-        if match:
-            candidate = match.group(1).lower().strip()
-            if candidate in VALID_LABELS:
-                return candidate
-
-        # Fallback: last valid label word found in the response
+        if match and match.group(1).lower() in ORDINAL_ORDER:
+            return match.group(1).lower()
+        # Fallback: last valid label word in the response
         found = None
-        for label in VALID_LABELS:
+        for label in ORDINAL_ORDER:
             if label in response.lower():
                 found = label
-        return found if found else "unknown"
+        return found or "unknown"
 
     def analyze_post(self, text: str) -> tuple[str, str]:
-        """
-        Runs Chain-of-Thought reasoning on a single post.
-
-        Args:
-            text: The social media post to analyse.
-
-        Returns:
-            (reasoning_and_label_response, predicted_label)
-        """
-        prompt = self._build_prompt(text)
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        """Runs CoT reasoning on one post. Returns (full_response, predicted_label)."""
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": f"Post: \"{text}\""},
+        ]
+        inputs = self.tokenizer(
+            self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False),
+            return_tensors="pt",
+        ).to(self.model.device)
 
         with torch.no_grad():
             output_ids = self.model.generate(
                 **inputs,
                 max_new_tokens=200,
-                temperature=0.1,         # Near-deterministic for clinical consistency
+                temperature=0.1,
                 do_sample=True,
                 repetition_penalty=1.1,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
 
-        # Decode only newly generated tokens (exclude the echoed prompt)
-        new_tokens = output_ids[0][inputs["input_ids"].shape[-1]:]
-        response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        # Decode only newly generated tokens
+        response = self.tokenizer.decode(
+            output_ids[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True
+        ).strip()
 
-        predicted_label = self._parse_label(response)
-        return response, predicted_label
-
-    # ── Batch processing ───────────────────────────────────────────────────────
+        return response, self._parse_label(response)
 
     def process_filtered_posts(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Runs Tier 2 analysis on all posts that passed the Tier 1 filter.
-
-        Args:
-            df: DataFrame with at least a 'text' column (output of Tier 1).
-
-        Returns:
-            DataFrame with added 'tier2_label' and 'tier2_reasoning' columns.
-        """
-        df = df.copy()
+        """Runs Tier 2 on all posts from Tier 1. Adds 'tier2_label' and 'tier2_reasoning'."""
+        df     = df.copy()
         labels, reasonings = [], []
-        total = len(df)
-
-        print(f"[Tier 2] Analysing {total} filtered posts...")
 
         for idx, text in enumerate(df["text"], start=1):
             try:
                 reasoning, label = self.analyze_post(text)
                 labels.append(label)
                 reasonings.append(reasoning)
-                print(f"[Tier 2] ({idx}/{total}) → {label}")
+                print(f"[Tier 2] ({idx}/{len(df)}) → {label}")
             except Exception as e:
                 labels.append("error")
                 reasonings.append(str(e))
-                print(f"[Tier 2] ({idx}/{total}) → ERROR: {e}")
+                print(f"[Tier 2] ({idx}/{len(df)}) → ERROR: {e}")
 
-        df["tier2_label"] = labels
+        df["tier2_label"]     = labels
         df["tier2_reasoning"] = reasonings
 
-        unparseable = sum(1 for l in labels if l in ("unknown", "error"))
-        if unparseable:
-            print(f"[Tier 2] Warning: {unparseable}/{total} posts returned unparseable labels.")
+        n_bad = sum(1 for l in labels if l in ("unknown", "error"))
+        if n_bad:
+            print(f"[Tier 2] Warning: {n_bad}/{len(df)} posts returned unparseable labels.")
 
         return df
     
