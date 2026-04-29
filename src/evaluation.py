@@ -4,10 +4,30 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score, p
 from src.constants import ORDINAL_ORDER
 
 
-def evaluate_tier1(original_df: pd.DataFrame, filtered_df: pd.DataFrame) -> float:
-    total  = len(original_df[original_df["label"] == "severe"])
-    passed = len(filtered_df[filtered_df["label"] == "severe"])
-    return (passed / total * 100) if total else 100.0
+def evaluate_tier1(original_df: pd.DataFrame, filtered_df: pd.DataFrame) -> dict:
+    """
+    Per-class recall at Tier 1.
+
+    Clinical priority order:
+      severe   — must be retained; these users need intervention
+      moderate — useful to retain; may need support
+      mild     — helpful but not critical
+      minimal  — safely discardable; binary model will pass most anyway
+                 due to depression-adjacent language, and LLM will correctly
+                 label any that do pass through
+    """
+    recall = {}
+    for label in ORDINAL_ORDER:
+        total  = len(original_df[original_df["label"] == label])
+        passed = len(filtered_df[filtered_df["label"] == label])
+        recall[label] = (passed / total * 100) if total else 100.0
+
+    # At-risk recall: mild + moderate + severe combined (excludes minimal)
+    at_risk_total  = len(original_df[original_df["label"].isin(["mild", "moderate", "severe"])])
+    at_risk_passed = len(filtered_df[filtered_df["label"].isin(["mild", "moderate", "severe"])])
+    recall["at_risk"] = (at_risk_passed / at_risk_total * 100) if at_risk_total else 100.0
+
+    return recall
 
 
 def evaluate_tier2(df: pd.DataFrame) -> tuple[float, float, float, float]:
@@ -43,18 +63,33 @@ def print_classification_report(df: pd.DataFrame) -> None:
         print(f"{label:>10}" + "".join(f"{v:>10}" for v in row))
 
 
-def print_final_report(t1_metrics, t1_recall, t2_precision, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae) -> None:
+def print_final_report(
+    t1_metrics:      dict,
+    t1_recall:       dict,
+    t2_precision:    float,
+    t2_macro_f1:     float,
+    t2_weighted_f1:  float,
+    t2_ordinal_mae:  float,
+) -> None:
     w = 52
     print("\n" + "=" * w)
     print("       CASCADE SYSTEM EVALUATION REPORT")
     print("=" * w)
+
     print(f"\n[Tier 1 — Sentinel Filter]")
     print(f"  Model              : mrm8488/distilroberta-base-finetuned-suicide-depression")
-    print(f"  Threshold          : p > 0.30")
+    print(f"  Threshold          : p > {t1_metrics['threshold']:.2f}")
     print(f"  Posts In / Out     : {t1_metrics['original_count']} → {t1_metrics['passed_count']}")
-    print(f"  Reduction          : {t1_metrics['reduction_percentage']:.1f}% filtered out")
+    print(f"  Filtered Out       : {t1_metrics['reduction_percentage']:.1f}%")
+    print(f"  Throughput         : {t1_metrics['throughput_per_sec']:.0f} posts/sec")
     print(f"  Latency per Post   : {t1_metrics['latency_per_post_ms']:.2f} ms")
-    print(f"  System Recall      : {t1_recall:.1f}%  (severe cases retained)")
+    print(f"\n  Per-Class Recall:")
+    print(f"    severe   : {t1_recall['severe']:5.1f}%  ← must be high (intervention needed)")
+    print(f"    moderate : {t1_recall['moderate']:5.1f}%  ← useful to retain")
+    print(f"    mild     : {t1_recall['mild']:5.1f}%  ← helpful to retain")
+    print(f"    minimal  : {t1_recall['minimal']:5.1f}%  ← safely discardable")
+    print(f"  At-risk Recall     : {t1_recall['at_risk']:.1f}%  (mild + moderate + severe)")
+
     print(f"\n[Tier 2 — Fine-tuned LLM Reasoning Engine]")
     print(f"  Base Model         : meta-llama/Meta-Llama-3.1-8B-Instruct")
     print(f"  Adaptation         : QLoRA (4-bit NF4, rank=16) + WeightedRandomSampler")

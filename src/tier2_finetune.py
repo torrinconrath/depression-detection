@@ -4,9 +4,8 @@ tier2_finetune.py — QLoRA fine-tuning for the Tier 2 LLM.
 Fine-tunes Llama 3.1-8B-Instruct on the DSD training split using:
   - QLoRA (4-bit NF4 base + LoRA adapters) to fit on a single consumer GPU
   - Chain-of-Thought formatted examples (Reasoning: ... Label: ...)
-  - Severe-biased sampler: severe cases seen ~4x more than their natural rate,
-    other classes kept at natural frequency to avoid the severe-default collapse
-    seen with full class-balancing. Priority is severe recall above all else.
+  - Severity-biased sampler: severe 8×, moderate 3×, mild 2.5× boost over natural
+    frequency to counter the 72.8% minimal prior without collapsing into a single-class default
 """
 
 import pandas as pd
@@ -28,10 +27,11 @@ CONFIG = {
 }
 
 # Per-class sampling multipliers relative to natural frequency.
-# Severe is boosted 4x so the model sees it frequently enough to learn a sharp
-# boundary. Other classes stay at natural rate so the model doesn't collapse
-# into predicting severe for everything it's uncertain about.
-SAMPLE_WEIGHTS = {"minimal": 1.0, "mild": 1.0, "moderate": 1.0, "severe": 4.0}
+# Minimal is 72.8% of data — an overwhelming prior that pulls everything toward it.
+# Weights are tuned so effective batch composition is roughly:
+#   minimal ~35%, mild ~18%, moderate ~20%, severe ~27%
+# Severe is boosted most aggressively given the clinical priority.
+SAMPLE_WEIGHTS = {"minimal": 1.0, "mild": 2.5, "moderate": 3.0, "severe": 8.0}
 
 
 def format_example(row: pd.Series) -> dict:

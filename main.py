@@ -3,8 +3,9 @@ main.py — Two-Tier Depression Severity Detection Pipeline
 
 Run order:
     1. Set "skip_tier2": True to test just the filter and save splits.
-    2. Run src/tier2_finetune.py to train the LLM adapter (GPU required).
-    3. Set "skip_tier2": False and run this script for the full pipeline.
+    2. Run src/tier1_finetune.py to train the 4-class Tier 1 classifier (optional, CPU-capable).
+    3. Run src/tier2_finetune.py to train the LLM adapter (GPU required).
+    4. Set "skip_tier2": False and run this script for the full pipeline.
 """
 
 import os
@@ -17,8 +18,8 @@ CONFIG = {
     "data_path":    "data/dsd.csv",
     "output_path":  "data/final_results.csv",
     "test_size":    0.2,
-    "tier1_model":  "mrm8488/distilroberta-base-finetuned-suicide-depression",
-    "threshold":    0.15,
+    "tier1_model":  "models/tier1_classifier",  # falls back to binary model if not found
+    "threshold":    0.15,                        # only used by binary fallback
     "adapter_path": "models/tier2_adapter",
     "skip_tier2":   False,
 }
@@ -39,10 +40,14 @@ def main():
     test_df.to_csv("data/test.csv",   index=False)
     print("\n[Data] Splits saved → data/train.csv, data/test.csv")
 
-    tier1 = Tier1Filter(model_name=CONFIG["tier1_model"], threshold=CONFIG["threshold"])
+    tier1 = Tier1Filter(model_path=CONFIG["tier1_model"], threshold=CONFIG["threshold"])
     filtered_df, t1_metrics = tier1.filter_posts(test_df)
     t1_recall = evaluate_tier1(original_df=test_df, filtered_df=filtered_df)
-    print(f"[Tier 1] System Recall (severe): {t1_recall:.1f}%")
+    print(
+        f"[Tier 1] Severe Recall: {t1_recall['severe']:.1f}% | "
+        f"At-risk Recall: {t1_recall['at_risk']:.1f}% | "
+        f"Throughput: {t1_metrics['throughput_per_sec']:.0f} posts/sec"
+    )
 
     if CONFIG["skip_tier2"] or filtered_df.empty:
         reason = "skip_tier2 is True" if CONFIG["skip_tier2"] else "Tier 1 passed 0 posts"
@@ -75,4 +80,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
