@@ -4,7 +4,9 @@ tier2_finetune.py — QLoRA fine-tuning for the Tier 2 LLM.
 Fine-tunes Llama 3.1-8B-Instruct on the DSD training split using:
   - QLoRA (4-bit NF4 base + LoRA adapters) to fit on a single consumer GPU
   - Chain-of-Thought formatted examples (Reasoning: ... Label: ...)
-  - WeightedRandomSampler to counter class imbalance
+  - Severe-biased sampler: severe cases seen ~4x more than their natural rate,
+    other classes kept at natural frequency to avoid the severe-default collapse
+    seen with full class-balancing. Priority is severe recall above all else.
 """
 
 import pandas as pd
@@ -16,19 +18,25 @@ from transformers import (
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
     DataCollatorForLanguageModeling, Trainer, TrainingArguments,
 )
-from src.constants import BASE_MODEL_ID, ORDINAL_ORDER, SYSTEM_PROMPT, COT_STUBS
+from src.constants import BASE_MODEL_ID, ORDINAL_ORDER, SYSTEM_PROMPT, get_cot_stub
 
 CONFIG = {
     "train_csv":   "data/train.csv",
     "output_dir":  "models/tier2_adapter",
     "epochs":      3,
-    "max_seq_len": 384, # used check_token_length to find max ideal
+    "max_seq_len": 384,  # derived from check_token_lengths.py — full dataset coverage
 }
+
+# Per-class sampling multipliers relative to natural frequency.
+# Severe is boosted 4x so the model sees it frequently enough to learn a sharp
+# boundary. Other classes stay at natural rate so the model doesn't collapse
+# into predicting severe for everything it's uncertain about.
+SAMPLE_WEIGHTS = {"minimal": 1.0, "mild": 1.0, "moderate": 1.0, "severe": 4.0}
 
 
 def format_example(row: pd.Series) -> dict:
     label     = row["label"].capitalize()
-    reasoning = COT_STUBS.get(label, "Insufficient information to determine severity.")
+    reasoning = get_cot_stub(label)
     prompt  = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n{SYSTEM_PROMPT}<|eot_id|>"
     prompt += f"<|start_header_id|>user<|end_header_id|>\nPost: \"{row['text']}\"<|eot_id|>"
     prompt += f"<|start_header_id|>assistant<|end_header_id|>\nReasoning: {reasoning}\nLabel: {label}<|eot_id|>"
@@ -36,10 +44,8 @@ def format_example(row: pd.Series) -> dict:
 
 
 def build_weighted_sampler(train_df: pd.DataFrame) -> WeightedRandomSampler:
-    counts  = train_df["label"].value_counts().to_dict()
-    total   = len(train_df)
-    weights = train_df["label"].map(lambda lbl: total / (len(ORDINAL_ORDER) * counts.get(lbl, 1))).tolist()
-    return WeightedRandomSampler(weights=weights, num_samples=total, replacement=True)
+    weights = train_df["label"].map(lambda lbl: SAMPLE_WEIGHTS.get(lbl, 1.0)).tolist()
+    return WeightedRandomSampler(weights=weights, num_samples=len(train_df), replacement=True)
 
 
 class _WeightedTrainer(Trainer):
@@ -74,8 +80,7 @@ def finetune() -> None:
     )
     print(f"[Finetune] Loading base model: {BASE_MODEL_ID}")
     base_model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_ID, quantization_config=bnb_config, device_map="auto", 
-        torch_dtype=torch.float16, low_cpu_mem_usage=True, 
+        BASE_MODEL_ID, quantization_config=bnb_config, device_map="auto"
     )
     model = get_peft_model(
         prepare_model_for_kbit_training(base_model),
@@ -102,6 +107,8 @@ def finetune() -> None:
             optim="paged_adamw_8bit",
             warmup_ratio=0.05,
             lr_scheduler_type="cosine",
+            max_grad_norm=1.0,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
             report_to="none",
         ),
         train_dataset=hf_dataset,
@@ -117,3 +124,4 @@ def finetune() -> None:
 if __name__ == "__main__":
     print("=" * 52 + "\n  Tier 2 LLM Finetuning\n" + "=" * 52)
     finetune()
+    
