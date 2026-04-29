@@ -21,7 +21,8 @@ class Tier2ReasoningEngine:
         self.tokenizer.padding_side = "left"
 
         base_model = AutoModelForCausalLM.from_pretrained(
-            BASE_MODEL_ID, quantization_config=bnb_config, device_map="auto"
+            BASE_MODEL_ID, quantization_config=bnb_config, device_map="auto",
+            low_cpu_mem_usage=True, torch_dtype=torch.float16,
         )
         print(f"[Tier 2] Loading adapter: {adapter_path}")
         self.model = PeftModel.from_pretrained(base_model, adapter_path)

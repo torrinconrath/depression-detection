@@ -8,9 +8,9 @@ torchaudio==2.2.2+cu121
 transformers==4.44.2
 peft==0.12.0
 bitsandbytes==0.43.3
+accelerate==0.30.1
 
 # Unpinned — stable APIs, latest is fine
-accelerate
 pandas
 scikit-learn
 datasets

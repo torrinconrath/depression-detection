@@ -18,7 +18,7 @@ CONFIG = {
     "output_path":  "data/final_results.csv",
     "test_size":    0.2,
     "tier1_model":  "mrm8488/distilroberta-base-finetuned-suicide-depression",
-    "threshold":    0.3,
+    "threshold":    0.15,
     "adapter_path": "models/tier2_adapter",
     "skip_tier2":   False,
 }

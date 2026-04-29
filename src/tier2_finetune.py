@@ -74,7 +74,8 @@ def finetune() -> None:
     )
     print(f"[Finetune] Loading base model: {BASE_MODEL_ID}")
     base_model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_ID, quantization_config=bnb_config, device_map="auto"
+        BASE_MODEL_ID, quantization_config=bnb_config, device_map="auto", 
+        torch_dtype=torch.float16, low_cpu_mem_usage=True, 
     )
     model = get_peft_model(
         prepare_model_for_kbit_training(base_model),
