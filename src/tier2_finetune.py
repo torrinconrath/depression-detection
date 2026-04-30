@@ -3,9 +3,12 @@ tier2_finetune.py — QLoRA fine-tuning for the Tier 2 LLM.
 
 Fine-tunes Llama 3.1-8B-Instruct on the DSD training split using:
   - QLoRA (4-bit NF4 base + LoRA adapters) to fit on a single consumer GPU
-  - Chain-of-Thought formatted examples (Reasoning: ... Label: ...)
-  - Severity-biased sampler: severe 8×, moderate 3×, mild 2.5× boost over natural
-    frequency to counter the 72.8% minimal prior without collapsing into a single-class default
+  - Chain-of-Thought formatted examples: assistant turn includes both Reasoning
+    and Label so the model learns the full CoT output format
+  - Diverse stubs (4-5 per class) sampled randomly so each training pass
+    surfaces different clinical framings — avoids single-template memorisation
+  - Severity-biased sampler: severe 8x, moderate 3x, mild 2.5x boost over
+    natural frequency to counter the 72.8% minimal prior
 """
 
 import pandas as pd
@@ -35,11 +38,26 @@ SAMPLE_WEIGHTS = {"minimal": 1.0, "mild": 2.5, "moderate": 3.0, "severe": 8.0}
 
 
 def format_example(row: pd.Series) -> dict:
+    """
+    Full CoT supervision: assistant turn contains both Reasoning and Label.
+    The model is trained to produce clinical reasoning followed by the label —
+    matching exactly what is expected at inference time. Stubs are sampled
+    randomly from a diverse set per class so the model learns the reasoning
+    space rather than memorising a single template.
+    """
     label     = row["label"].capitalize()
     reasoning = get_cot_stub(label)
-    prompt  = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n{SYSTEM_PROMPT}<|eot_id|>"
-    prompt += f"<|start_header_id|>user<|end_header_id|>\nPost: \"{row['text']}\"<|eot_id|>"
-    prompt += f"<|start_header_id|>assistant<|end_header_id|>\nReasoning: {reasoning}\nLabel: {label}<|eot_id|>"
+    prompt = (
+        "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
+        + SYSTEM_PROMPT
+        + "<|eot_id|>"
+        + "<|start_header_id|>user<|end_header_id|>\n"
+        + f"Post: \"{row['text']}\""
+        + "<|eot_id|>"
+        + "<|start_header_id|>assistant<|end_header_id|>\n"
+        + f"Reasoning: {reasoning}\nLabel: {label}"
+        + "<|eot_id|>"
+    )
     return {"text": prompt}
 
 

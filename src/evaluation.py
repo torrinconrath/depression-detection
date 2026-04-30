@@ -70,6 +70,7 @@ def print_final_report(
     t2_macro_f1:     float,
     t2_weighted_f1:  float,
     t2_ordinal_mae:  float,
+    t1_model_name:   str = "models/tier1_classifier",
 ) -> None:
     w = 52
     print("\n" + "=" * w)
@@ -77,7 +78,7 @@ def print_final_report(
     print("=" * w)
 
     print(f"\n[Tier 1 — Sentinel Filter]")
-    print(f"  Model              : mrm8488/distilroberta-base-finetuned-suicide-depression")
+    print(f"  Model              : {t1_model_name}")
     print(f"  Threshold          : p > {t1_metrics['threshold']:.2f}")
     print(f"  Posts In / Out     : {t1_metrics['original_count']} → {t1_metrics['passed_count']}")
     print(f"  Filtered Out       : {t1_metrics['reduction_percentage']:.1f}%")
@@ -90,9 +91,9 @@ def print_final_report(
     print(f"    minimal  : {t1_recall['minimal']:5.1f}%  ← safely discardable")
     print(f"  At-risk Recall     : {t1_recall['at_risk']:.1f}%  (mild + moderate + severe)")
 
-    print(f"\n[Tier 2 — Fine-tuned LLM Reasoning Engine]")
+    print(f"\n[Tier 2 — LLM Reasoning Engine]")
     print(f"  Base Model         : meta-llama/Meta-Llama-3.1-8B-Instruct")
-    print(f"  Adaptation         : QLoRA (4-bit NF4, rank=16) + WeightedRandomSampler")
+    print(f"  Adaptation         : QLoRA (4-bit NF4, rank=16), diverse CoT stubs, severity-biased sampler")
     print(f"  Moderation Prec.   : {t2_precision:.4f}  (macro)")
     print(f"  F1 — Macro         : {t2_macro_f1:.4f}")
     print(f"  F1 — Weighted      : {t2_weighted_f1:.4f}")

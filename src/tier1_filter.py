@@ -2,8 +2,9 @@ import time
 import torch
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+from src.constants import ORDINAL_ORDER
 
-DEFAULT_PRETRAINED = "mrm8488/distilroberta-base-finetuned-suicide-depression" # default depressive/non-depressive model
+DEFAULT_PRETRAINED = "mrm8488/distilroberta-base-finetuned-suicide-depression"
 DEFAULT_FINETUNED  = "models/tier1_classifier"
 DEPRESSIVE_LABEL   = "LABEL_1"
 
@@ -16,35 +17,23 @@ class Tier1Filter:
         not found. The 4-class model filters out true minimal posts specifically;
         the binary fallback can only approximate this via threshold.
         """
-        self.threshold = threshold
-        self.device    = 0 if torch.cuda.is_available() else -1
+        self.threshold      = threshold
+        self.device         = 0 if torch.cuda.is_available() else -1
         self._is_multiclass = False
 
         import os
         if os.path.isdir(model_path):
             print(f"[Tier 1] Loading fine-tuned 4-class classifier: {model_path}")
             self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-            base_model     = AutoModelForSequenceClassification.from_pretrained(model_path)
-
-            # Load quantized weights if available (produced by tier1_finetune.py)
-            quantized_path = os.path.join(model_path, "quantized_model.pt")
-            if os.path.exists(quantized_path):
-                quantized = torch.quantization.quantize_dynamic(base_model, {torch.nn.Linear}, dtype=torch.qint8)
-                quantized.load_state_dict(torch.load(quantized_path, map_location="cpu"))
-                self.model = quantized
-                print(f"[Tier 1] Loaded quantized int8 weights (fast CPU inference).")
-            else:
-                self.model = base_model
-                if torch.cuda.is_available():
-                    self.model = self.model.cuda()
-
+            self.model     = AutoModelForSequenceClassification.from_pretrained(model_path)
+            if torch.cuda.is_available():
+                self.model = self.model.cuda()
             self.model.eval()
             self._is_multiclass = True
             print(f"[Tier 1] Ready (4-class) on {'GPU' if self.device == 0 else 'CPU'}.")
         else:
-            # Fallback: pretrained binary model
             print(f"[Tier 1] Fine-tuned classifier not found at '{model_path}'.")
-            print(f"[Tier 1] Falling back to pretrained binary model. Run src/tier1_finetune.py first.")
+            print(f"[Tier 1] Falling back to binary model. Run src/tier1_finetune.py first.")
             self.classifier = pipeline(
                 "text-classification", model=DEFAULT_PRETRAINED,
                 device=self.device, truncation=True, max_length=512,
@@ -52,9 +41,8 @@ class Tier1Filter:
             print(f"[Tier 1] Ready (binary fallback) on {'GPU' if self.device == 0 else 'CPU'}. Threshold: p > {threshold}")
 
     def _predict_multiclass(self, texts: list[str], batch_size: int) -> list[str]:
-        """Returns predicted label string for each text."""
         id2label = self.model.config.id2label
-        preds = []
+        preds    = []
         for i in range(0, len(texts), batch_size):
             batch = self.tokenizer(
                 texts[i : i + batch_size],
@@ -73,12 +61,10 @@ class Tier1Filter:
         start_time = time.time()
 
         if self._is_multiclass:
-            # Pass everything that isn't predicted minimal
             preds      = self._predict_multiclass(texts, batch_size)
             passed_idx = [i for i, p in enumerate(preds) if p != "minimal"]
             scores     = [1.0 if preds[i] != "minimal" else 0.0 for i in passed_idx]
         else:
-            # Binary fallback — threshold on depressive probability
             results = []
             for i in range(0, len(texts), batch_size):
                 results.extend(self.classifier(texts[i : i + batch_size]))

@@ -1,12 +1,11 @@
 """
 tier1_finetune.py — Fine-tune a 4-class severity classifier for Tier 1.
 
-Replaces the binary DistilRoBERTa filter with a model that actually understands
-all four severity labels. This lets Tier 1 filter out true minimal posts rather
-than approximating it with a binary depression threshold, giving Tier 2 a clean
-~193-post input instead of 500+ noisy ones.
+Replaces the binary DistilRoBERTa filter with a model that understands all four
+severity labels, allowing Tier 1 to filter out true minimal posts rather than
+approximating it with a binary depression threshold.
 
-Model: distilroberta-base (fast, CPU-capable, <300MB)
+Model: distilroberta-base (fast, GPU-accelerated, ~300MB)
 Task:  sequence classification — minimal / mild / moderate / severe
 
 Usage:
@@ -14,7 +13,6 @@ Usage:
 """
 
 import os
-import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import classification_report, f1_score
@@ -148,21 +146,7 @@ def finetune() -> None:
     print(f"\n[Tier1-Finetune] Training complete. Best severe F1: {best_severe_f1:.4f}")
     print(f"[Tier1-Finetune] Classifier saved to '{CONFIG['output_dir']}'.")
 
-    # Post-training dynamic int8 quantization — matches paper spec ("quantized BERT").
-    # Fine-tuning always runs in fp32; quantization is applied to the saved weights after.
-    # quantize_dynamic wraps all nn.Linear layers — attention + FFN — reducing size ~3x
-    # and speeding up CPU inference with no retraining needed.
-    # Note: save_pretrained is incompatible with quantized models (weights are no longer
-    # standard tensors). We save the quantized state_dict separately and load it the same way.
-    print("[Tier1-Finetune] Applying dynamic int8 quantization...")
-    fp32_model = AutoModelForSequenceClassification.from_pretrained(CONFIG["output_dir"])
-    quantized_model = torch.quantization.quantize_dynamic(
-        fp32_model, {torch.nn.Linear}, dtype=torch.qint8
-    )
-    torch.save(quantized_model.state_dict(), os.path.join(CONFIG["output_dir"], "quantized_model.pt"))
-    print("[Tier1-Finetune] Quantized weights saved to 'quantized_model.pt' (~80MB vs ~300MB fp32).")
-
-    # Final report on training set — uses the fp32 checkpoint (quantized model not needed here)
+    # Final report on training set
     model = AutoModelForSequenceClassification.from_pretrained(CONFIG["output_dir"]).to(device)
     final_loader = DataLoader(train_dataset, batch_size=CONFIG["batch_size"])
     _, _, all_labels, all_preds = evaluate(model, final_loader, device)
@@ -174,3 +158,4 @@ def finetune() -> None:
 if __name__ == "__main__":
     print("=" * 52 + "\n  Tier 1 Classifier Finetuning\n" + "=" * 52)
     finetune()
+    

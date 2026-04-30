@@ -21,7 +21,7 @@ CONFIG = {
     "tier1_model":  "models/tier1_classifier",  # falls back to binary model if not found
     "threshold":    0.15,                        # only used by binary fallback
     "adapter_path": "models/tier2_adapter",
-    "skip_tier2":   False,
+    "skip_tier2":   True,
 }
 
 
@@ -52,7 +52,7 @@ def main():
     if CONFIG["skip_tier2"] or filtered_df.empty:
         reason = "skip_tier2 is True" if CONFIG["skip_tier2"] else "Tier 1 passed 0 posts"
         print(f"\n[Pipeline] {reason}. Stopping after Tier 1.")
-        print_final_report(t1_metrics, t1_recall, 0.0, 0.0, 0.0, float("nan"))
+        print_final_report(t1_metrics, t1_recall, 0.0, 0.0, 0.0, float("nan"), CONFIG["tier1_model"])
         return
 
     if not os.path.isdir(CONFIG["adapter_path"]):
@@ -75,7 +75,7 @@ def main():
         t2_precision = t2_macro_f1 = t2_weighted_f1 = 0.0
         t2_ordinal_mae = float("nan")
 
-    print_final_report(t1_metrics, t1_recall, t2_precision, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae)
+    print_final_report(t1_metrics, t1_recall, t2_precision, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae, CONFIG["tier1_model"])
 
 
 if __name__ == "__main__":
