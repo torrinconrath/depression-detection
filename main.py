@@ -1,11 +1,23 @@
 """
 main.py — Two-Tier Depression Severity Detection Pipeline
 
+Architecture:
+    Tier 1 — Binary recall gate (mrm8488/distilroberta-base-finetuned-suicide-depression)
+              Pretrained binary classifier, no fine-tuning required. Low threshold (p > 0.15)
+              ensures 97%+ severe recall. Tier 1's only job is to ask "might this person
+              need attention?" — severity classification is exclusively Tier 2's job.
+
+    Tier 2 — Llama 3.1-8B-Instruct + QLoRA adapter fine-tuned on DSD (post → label).
+              The system prompt instructs the model to produce clinical reasoning before
+              the label. No synthetic reasoning stubs are used — the model generates its
+              own CoT from its pre-trained knowledge; fine-tuning aligns the label output
+              to the four-class DSD severity scale.
+
 Run order:
-    1. Set "skip_tier2": True to test just the filter and save splits.
-    2. Run src/tier1_finetune.py to train the 4-class Tier 1 classifier (optional, CPU-capable).
-    3. Run src/tier2_finetune.py to train the LLM adapter (GPU required).
-    4. Set "skip_tier2": False and run this script for the full pipeline.
+    1. python -m src.tier2_finetune        (GPU required — trains the Tier 2 adapter)
+    2. python main.py                      (runs the full two-tier pipeline on the test set)
+
+    Optional: set skip_tier2: True to evaluate Tier 1 alone without the adapter.
 """
 
 import os
@@ -18,8 +30,10 @@ CONFIG = {
     "data_path":    "data/dsd.csv",
     "output_path":  "data/final_results.csv",
     "test_size":    0.2,
-    "tier1_model":  "models/tier1_classifier",  # falls back to binary model if not found
-    "threshold":    0.15,                        # only used by binary fallback
+    # Tier 1 uses the pretrained binary DistilRoBERTa — no local model path needed.
+    # p > 0.15 is intentionally aggressive to maximise severe recall (clinical priority).
+    # Raise to 0.20 if Tier 2 throughput becomes a bottleneck.
+    "threshold":    0.15,
     "adapter_path": "models/tier2_adapter",
     "skip_tier2":   True,
 }
@@ -40,7 +54,8 @@ def main():
     test_df.to_csv("data/test.csv",   index=False)
     print("\n[Data] Splits saved → data/train.csv, data/test.csv")
 
-    tier1 = Tier1Filter(model_path=CONFIG["tier1_model"], threshold=CONFIG["threshold"])
+    # Tier 1 — binary recall gate (pretrained, no fine-tuning needed)
+    tier1 = Tier1Filter(threshold=CONFIG["threshold"])
     filtered_df, t1_metrics = tier1.filter_posts(test_df)
     t1_recall = evaluate_tier1(original_df=test_df, filtered_df=filtered_df)
     print(
@@ -52,11 +67,12 @@ def main():
     if CONFIG["skip_tier2"] or filtered_df.empty:
         reason = "skip_tier2 is True" if CONFIG["skip_tier2"] else "Tier 1 passed 0 posts"
         print(f"\n[Pipeline] {reason}. Stopping after Tier 1.")
-        print_final_report(t1_metrics, t1_recall, 0.0, 0.0, 0.0, float("nan"), CONFIG["tier1_model"])
+        print_final_report(t1_metrics, t1_recall, 0.0, 0.0, 0.0, float("nan"))
         return
 
     if not os.path.isdir(CONFIG["adapter_path"]):
-        print(f"\n[Error] No adapter at '{CONFIG['adapter_path']}'. Run: python -m src.tier2_finetune")
+        print(f"\n[Error] No adapter found at '{CONFIG['adapter_path']}'.")
+        print(f"[Error] Run: python -m src.tier2_finetune")
         return
 
     try:
@@ -75,8 +91,9 @@ def main():
         t2_precision = t2_macro_f1 = t2_weighted_f1 = 0.0
         t2_ordinal_mae = float("nan")
 
-    print_final_report(t1_metrics, t1_recall, t2_precision, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae, CONFIG["tier1_model"])
+    print_final_report(t1_metrics, t1_recall, t2_precision, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae)
 
 
 if __name__ == "__main__":
     main()
+    

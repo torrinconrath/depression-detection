@@ -40,3 +40,4 @@ def print_label_distribution(df: pd.DataFrame, name: str = "Dataset") -> None:
         n   = counts.get(label, 0)
         pct = n / total * 100 if total else 0
         print(f"  {label:<10} | {n:>4} ({pct:5.1f}%) {' ' * int(pct / 2)}")
+        

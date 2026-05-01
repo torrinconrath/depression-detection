@@ -3,12 +3,18 @@ tier2_finetune.py — QLoRA fine-tuning for the Tier 2 LLM.
 
 Fine-tunes Llama 3.1-8B-Instruct on the DSD training split using:
   - QLoRA (4-bit NF4 base + LoRA adapters) to fit on a single consumer GPU
-  - Chain-of-Thought formatted examples: assistant turn includes both Reasoning
-    and Label so the model learns the full CoT output format
-  - Diverse stubs (4-5 per class) sampled randomly so each training pass
-    surfaces different clinical framings — avoids single-template memorisation
-  - Severity-biased sampler: severe 8x, moderate 3x, mild 2.5x boost over
-    natural frequency to counter the 72.8% minimal prior
+  - Label-only supervision: the assistant turn contains only "Label: <Severity>".
+    The system prompt instructs the model to produce Reasoning before the Label at
+    both train and inference time, so the model generates its own clinical CoT from
+    its pre-trained knowledge. We do not supervise the reasoning content because
+    synthetic stubs have no connection to the actual post text — training on them
+    causes a train/inference mismatch where the model learns stub patterns rather
+    than reasoning from post content.
+  - Severity-biased sampler: severe 8x, moderate 3x, mild 2.5x boost over natural
+    frequency to counter the 72.8% minimal prior in the DSD dataset.
+
+Usage:
+    python -m src.tier2_finetune
 """
 
 import pandas as pd
@@ -20,33 +26,31 @@ from transformers import (
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
     DataCollatorForLanguageModeling, Trainer, TrainingArguments,
 )
-from src.constants import BASE_MODEL_ID, ORDINAL_ORDER, SYSTEM_PROMPT, get_cot_stub
+from src.constants import BASE_MODEL_ID, ORDINAL_ORDER, SYSTEM_PROMPT
 
 CONFIG = {
     "train_csv":   "data/train.csv",
     "output_dir":  "models/tier2_adapter",
-    "epochs":      3,
-    "max_seq_len": 384,  # derived from check_token_lengths.py — full dataset coverage
+    "epochs":      3, # started at 4, but noticed overfitting with ideal checkpoint at epoch 3
+    "max_seq_len": 384, # lowest token length to capture the full sentence within the dataset (check_token_length.py)
 }
 
-# Per-class sampling multipliers relative to natural frequency.
-# Minimal is 72.8% of data — an overwhelming prior that pulls everything toward it.
-# Weights are tuned so effective batch composition is roughly:
+# Per-class sampling multipliers to counter the 72.8% minimal prior.
+# Effective batch composition becomes roughly:
 #   minimal ~35%, mild ~18%, moderate ~20%, severe ~27%
-# Severe is boosted most aggressively given the clinical priority.
 SAMPLE_WEIGHTS = {"minimal": 1.0, "mild": 2.5, "moderate": 3.0, "severe": 8.0}
 
 
 def format_example(row: pd.Series) -> dict:
     """
-    Full CoT supervision: assistant turn contains both Reasoning and Label.
-    The model is trained to produce clinical reasoning followed by the label —
-    matching exactly what is expected at inference time. Stubs are sampled
-    randomly from a diverse set per class so the model learns the reasoning
-    space rather than memorising a single template.
+    Format a training example as a ChatML-style prompt with label-only supervision.
+
+    The assistant turn contains only "Label: <Severity>" — no synthetic reasoning.
+    The system prompt's Reasoning:/Label: format means the model still learns to
+    generate CoT at inference; fine-tuning solely aligns the final label prediction
+    to the DSD severity scale using the model's own pre-trained clinical knowledge.
     """
-    label     = row["label"].capitalize()
-    reasoning = get_cot_stub(label)
+    label = row["label"].capitalize()
     prompt = (
         "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
         + SYSTEM_PROMPT
@@ -55,7 +59,7 @@ def format_example(row: pd.Series) -> dict:
         + f"Post: \"{row['text']}\""
         + "<|eot_id|>"
         + "<|start_header_id|>assistant<|end_header_id|>\n"
-        + f"Reasoning: {reasoning}\nLabel: {label}"
+        + f"Label: {label}"
         + "<|eot_id|>"
     )
     return {"text": prompt}
@@ -67,6 +71,7 @@ def build_weighted_sampler(train_df: pd.DataFrame) -> WeightedRandomSampler:
 
 
 class _WeightedTrainer(Trainer):
+    """Trainer subclass that injects the severity-biased sampler."""
     def __init__(self, *args, train_df: pd.DataFrame, **kwargs):
         super().__init__(*args, **kwargs)
         self._train_df = train_df
@@ -120,7 +125,8 @@ def finetune() -> None:
             learning_rate=1e-4,
             fp16=True,
             logging_steps=10,
-            save_strategy="epoch",
+            #save_strategy="epoch", # turned off due to computer freezing during savng checkpoints (my system is dying)
+            save_strategy="no",
             save_total_limit=1,
             optim="paged_adamw_8bit",
             warmup_ratio=0.05,
@@ -142,4 +148,3 @@ def finetune() -> None:
 if __name__ == "__main__":
     print("=" * 52 + "\n  Tier 2 LLM Finetuning\n" + "=" * 52)
     finetune()
-    

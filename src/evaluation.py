@@ -3,18 +3,20 @@ import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score
 from src.constants import ORDINAL_ORDER
 
+BINARY_MODEL = "mrm8488/distilroberta-base-finetuned-suicide-depression"
+
 
 def evaluate_tier1(original_df: pd.DataFrame, filtered_df: pd.DataFrame) -> dict:
     """
     Per-class recall at Tier 1.
 
     Clinical priority order:
-      severe   — must be retained; these users need intervention
-      moderate — useful to retain; may need support
-      mild     — helpful but not critical
-      minimal  — safely discardable; binary model will pass most anyway
-                 due to depression-adjacent language, and LLM will correctly
-                 label any that do pass through
+      severe   — must be retained; these users need urgent intervention
+      moderate — important to retain; may need support
+      mild     — useful to retain; early intervention opportunity
+      minimal  — safely discardable; binary model will pass most anyway due to
+                 depression-adjacent language, and Tier 2 will correctly label any
+                 that pass through
     """
     recall = {}
     for label in ORDINAL_ORDER:
@@ -64,22 +66,22 @@ def print_classification_report(df: pd.DataFrame) -> None:
 
 
 def print_final_report(
-    t1_metrics:      dict,
-    t1_recall:       dict,
-    t2_precision:    float,
-    t2_macro_f1:     float,
-    t2_weighted_f1:  float,
-    t2_ordinal_mae:  float,
-    t1_model_name:   str = "models/tier1_classifier",
+    t1_metrics:     dict,
+    t1_recall:      dict,
+    t2_precision:   float,
+    t2_macro_f1:    float,
+    t2_weighted_f1: float,
+    t2_ordinal_mae: float,
 ) -> None:
     w = 52
     print("\n" + "=" * w)
     print("       CASCADE SYSTEM EVALUATION REPORT")
     print("=" * w)
 
-    print(f"\n[Tier 1 — Sentinel Filter]")
-    print(f"  Model              : {t1_model_name}")
-    print(f"  Threshold          : p > {t1_metrics['threshold']:.2f}")
+    print(f"\n[Tier 1 — Binary Sentinel Filter]")
+    print(f"  Model              : {BINARY_MODEL}")
+    print(f"  Mode               : Binary (depressive / non-depressive)")
+    print(f"  Threshold          : p > {t1_metrics['threshold']:.2f}  (recall-priority gate)")
     print(f"  Posts In / Out     : {t1_metrics['original_count']} → {t1_metrics['passed_count']}")
     print(f"  Filtered Out       : {t1_metrics['reduction_percentage']:.1f}%")
     print(f"  Throughput         : {t1_metrics['throughput_per_sec']:.0f} posts/sec")
@@ -93,7 +95,8 @@ def print_final_report(
 
     print(f"\n[Tier 2 — LLM Reasoning Engine]")
     print(f"  Base Model         : meta-llama/Meta-Llama-3.1-8B-Instruct")
-    print(f"  Adaptation         : QLoRA (4-bit NF4, rank=16), diverse CoT stubs, severity-biased sampler")
+    print(f"  Adaptation         : QLoRA (4-bit NF4, rank=16), severity-biased sampler")
+    print(f"  Supervision        : Label-only — model generates own CoT reasoning")
     print(f"  Moderation Prec.   : {t2_precision:.4f}  (macro)")
     print(f"  F1 — Macro         : {t2_macro_f1:.4f}")
     print(f"  F1 — Weighted      : {t2_weighted_f1:.4f}")

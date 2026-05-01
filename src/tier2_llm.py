@@ -1,3 +1,14 @@
+"""
+tier2_llm.py — LLM Reasoning Engine (Tier 2)
+
+Loads the fine-tuned Llama 3.1-8B-Instruct + QLoRA adapter and classifies posts
+that passed the Tier 1 binary filter into the four DSD severity levels.
+
+The model generates its own clinical reasoning before the label (CoT via system
+prompt). Generation uses greedy decoding — deterministic and more consistent than
+low-temperature sampling for a classification task.
+"""
+
 import re
 import pandas as pd
 import torch
@@ -30,12 +41,37 @@ class Tier2ReasoningEngine:
         print("[Tier 2] Ready.")
 
     def _parse_label(self, response: str) -> str:
-        match = re.search(r"label\s*:\s*(\w+)", response, re.IGNORECASE)
-        if match and match.group(1).lower() in ORDINAL_ORDER:
-            return match.group(1).lower()
+        """
+        Extract the severity label from the model's response.
+
+        The model generates reasoning before the label, so we look for the explicit
+        'Label: <word>' pattern and take the LAST match — any label word mentioned
+        during the reasoning section is skipped in favour of the final verdict.
+        Falls back to scanning the last few lines, then the full response.
+        """
+        # Primary: explicit Label: tag — last match skips reasoning mentions
+        matches = re.findall(r"label\s*:\s*(\w+)", response, re.IGNORECASE)
+        if matches:
+            candidate = matches[-1].lower()
+            if candidate in ORDINAL_ORDER:
+                return candidate
+
+        # Secondary: scan the last 3 lines where the label most likely appears
+        tail = "\n".join(response.strip().splitlines()[-3:]).lower()
+        for label in reversed(ORDINAL_ORDER):   # severe → minimal (higher severity first)
+            if label in tail:
+                return label
+
+        # Last resort: full response scan
         return next((l for l in ORDINAL_ORDER if l in response.lower()), "unknown")
 
     def analyze_post(self, text: str) -> tuple[str, str]:
+        """
+        Run inference on a single post.
+
+        Returns:
+            (reasoning, label) — the full model response and the parsed severity label.
+        """
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": f"Post: \"{text}\""},
@@ -47,8 +83,10 @@ class Tier2ReasoningEngine:
 
         with torch.no_grad():
             output_ids = self.model.generate(
-                **inputs, max_new_tokens=200, temperature=0.1,
-                do_sample=True, repetition_penalty=1.1,
+                **inputs,
+                max_new_tokens=300,     # headroom for 2-4 sentence reasoning + label line
+                do_sample=False,        # greedy decoding: deterministic, better for classification
+                repetition_penalty=1.1,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
 
@@ -58,8 +96,10 @@ class Tier2ReasoningEngine:
         return response, self._parse_label(response)
 
     def process_filtered_posts(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Run Tier 2 inference over all posts that passed the Tier 1 filter."""
         df = df.copy()
         labels, reasonings = [], []
+
         for idx, text in enumerate(df["text"], start=1):
             try:
                 reasoning, label = self.analyze_post(text)
@@ -73,6 +113,7 @@ class Tier2ReasoningEngine:
 
         df["tier2_label"]     = labels
         df["tier2_reasoning"] = reasonings
+
         n_bad = sum(1 for l in labels if l in ("unknown", "error"))
         if n_bad:
             print(f"[Tier 2] Warning: {n_bad}/{len(df)} posts returned unparseable labels.")
