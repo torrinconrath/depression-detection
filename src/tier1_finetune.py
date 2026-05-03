@@ -37,8 +37,8 @@ BASE_MODEL_ID = "distilbert-base-uncased"
 CONFIG = {
     "train_csv":  "data/train.csv",
     "output_dir": "models/tier1_filter",
-    "epochs":     10,       # A bunch of epochs, saves best model at the end
-    "max_length": 384,      # Covers >99% of text without padding waste
+    "epochs":     4,       
+    "max_length": 384,    
     "batch_size": 16,
     "lr":         2e-5,
 }
@@ -148,4 +148,3 @@ def finetune() -> None:
 if __name__ == "__main__":
     print("=" * 52 + "\n  Tier 1 Binary Filter Fine-Tuning\n" + "=" * 52)
     finetune()
-    

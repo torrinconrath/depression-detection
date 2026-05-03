@@ -34,10 +34,10 @@ CONFIG = {
     "data_path":        "data/dsd.csv",
     "output_path":      "data/final_results.csv",
     "test_size":        0.2,
-    "threshold":        0.1,
+    "threshold":        0.09, # highest threshold that produced 100% severe recall
     "tier1_model_dir":  "models/tier1_filter",
     "adapter_path":     "models/tier2_adapter",
-    "skip_tier2":       True,
+    "skip_tier2":       False,
 }
 
 
