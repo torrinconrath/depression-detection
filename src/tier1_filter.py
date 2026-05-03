@@ -1,70 +1,80 @@
 """
-tier1_filter.py — Binary Sentinel Filter (Tier 1)
+tier1_filter.py — Sentinel Filter (Tier 1)
 
-Uses mrm8488/distilroberta-base-finetuned-suicide-depression, a pretrained binary
-DistilRoBERTa model, as a recall gate. No fine-tuning is required or performed.
+Loads the fine-tuned DistilBERT classifier (trained via tier1_finetune.py)
+as a recall gate. The model was fine-tuned on the 4-class DSD training split.
 
 Design rationale:
     Tier 1's only job is to ask "might this person need attention?" and pass anything
-    uncertain to the LLM. Severity classification (minimal/mild/moderate/severe) is
-    exclusively Tier 2's responsibility.
+    uncertain to the LLM. 
 
-    A 4-class classifier at Tier 1 was considered but rejected: argmax has no threshold
-    mechanism, so a post scored [minimal=0.40, mild=0.35, moderate=0.15, severe=0.10]
-    gets silently discarded even though 60% of the probability mass sits on at-risk
-    classes. The binary model with p > 0.15 instead asks whether any depressive signal
-    is present, passing borderline cases through to the LLM rather than dropping them.
+    Instead of relying on argmax (which silently drops posts if probability is split 
+    across mild/moderate/severe), this module sums the probability of the three 
+    "at-risk" classes. If P(mild) + P(moderate) + P(severe) > threshold, it passes 
+    to Tier 2.
 
-    At p > 0.15 the filter achieves ~97% severe recall while still removing the majority
-    of clearly non-depressive posts, reducing unnecessary LLM compute.
+    Fine-tuning on DSD (same domain, same distribution) rather than using a generic
+    pretrained suicide/depression model avoids domain shift and appropriately weights
+    the severe class.
 """
 
+import os
 import time
 import torch
 import pandas as pd
 from transformers import pipeline
 
-BINARY_MODEL   = "mrm8488/distilroberta-base-finetuned-suicide-depression"
-DEPRESSIVE_IDX = "LABEL_1"   # label assigned to the depressive class by this model
+FINETUNED_MODEL_DIR = "models/tier1_filter"
 
 
 class Tier1Filter:
-    def __init__(self, threshold: float = 0.15):
+    def __init__(self, threshold: float = 0.10, model_dir: str = FINETUNED_MODEL_DIR):
         """
         Args:
-            threshold: minimum depressive-class probability to pass a post to Tier 2.
-                       Lower = higher recall (fewer at-risk posts missed).
-                       Default 0.15 targets 97%+ severe recall.
+            threshold: minimum summed at-risk probability to pass a post to Tier 2.
+                       Since the model predicts 4 classes, this threshold looks at 
+                       P(mild) + P(moderate) + P(severe).
+            model_dir: path to the fine-tuned classifier saved by tier1_finetune.py.
         """
         self.threshold = threshold
-        device = 0 if torch.cuda.is_available() else -1
 
-        print(f"[Tier 1] Loading binary classifier: {BINARY_MODEL}")
+        if not os.path.isdir(model_dir):
+            raise FileNotFoundError(
+                f"[Tier 1] Fine-tuned model not found at '{model_dir}'.\n"
+                f"[Tier 1] Run: python -m src.tier1_finetune"
+            )
+
+        device = 0 if torch.cuda.is_available() else -1
+        print(f"[Tier 1] Loading fine-tuned classifier from '{model_dir}'")
         self.classifier = pipeline(
             "text-classification",
-            model=BINARY_MODEL,
+            model=model_dir,
             device=device,
             truncation=True,
-            max_length=512,
+            max_length=256,
+            top_k=None,  # CRITICAL: Forces pipeline to return scores for all 4 classes
         )
         print(
             f"[Tier 1] Ready on {'GPU' if device == 0 else 'CPU'}. "
-            f"Threshold: p(depressive) > {threshold}"
+            f"Threshold: P(not minimal) > {threshold}"
         )
 
-    def _depressive_prob(self, result: dict) -> float:
-        """Return the probability assigned to the depressive class."""
-        if result["label"] == DEPRESSIVE_IDX:
-            return result["score"]
-        return 1.0 - result["score"]
+    def _at_risk_prob(self, result: list) -> float:
+        """Sum the probabilities of mild, moderate, and severe."""
+        # result is a list of dicts: [{'label': 'mild', 'score': 0.4}, ...]
+        at_risk_prob = 0.0
+        for class_score in result:
+            if class_score["label"] != "minimal":
+                at_risk_prob += class_score["score"]
+        return at_risk_prob
 
     def filter_posts(self, df: pd.DataFrame, batch_size: int = 32) -> tuple[pd.DataFrame, dict]:
         """
-        Run binary classification on all posts and return those above the threshold.
+        Run classification on all posts and return those above the at-risk threshold.
 
         Returns:
             filtered_df: subset of df that passed the threshold, with a 'tier1_score'
-                         column containing the raw depressive-class probability.
+                         column containing the summed at-risk probability.
             metrics:     dict of throughput / latency / reduction statistics.
         """
         texts      = df["text"].tolist()
@@ -74,7 +84,7 @@ class Tier1Filter:
         for i in range(0, len(texts), batch_size):
             results.extend(self.classifier(texts[i : i + batch_size]))
 
-        probs      = [self._depressive_prob(r) for r in results]
+        probs      = [self._at_risk_prob(r) for r in results]
         passed_idx = [i for i, p in enumerate(probs) if p > self.threshold]
 
         elapsed_ms  = (time.time() - start_time) * 1000

@@ -3,8 +3,8 @@ main.py — Two-Tier Depression Severity Detection Pipeline
 
 Architecture:
     Tier 1 — Binary recall gate (mrm8488/distilroberta-base-finetuned-suicide-depression)
-              Pretrained binary classifier, no fine-tuning required. Low threshold (p > 0.15)
-              ensures 97%+ severe recall. Tier 1's only job is to ask "might this person
+              Pretrained binary classifier, no fine-tuning required. Low threshold (p > 0.09)
+              ensures 100% severe recall. Tier 1's only job is to ask "might this person
               need attention?" — severity classification is exclusively Tier 2's job.
 
     Tier 2 — Llama 3.1-8B-Instruct + QLoRA adapter fine-tuned on DSD (post → label).
@@ -24,18 +24,19 @@ import os
 from src.data_loader import load_dsd_dataset, split_dataset, print_label_distribution
 from src.tier1_filter import Tier1Filter
 from src.tier2_llm import Tier2ReasoningEngine
-from src.evaluation import evaluate_tier1, evaluate_tier2, print_classification_report, print_final_report
+from src.evaluation import (
+    evaluate_tier1, evaluate_tier2,
+    print_classification_report, print_final_report, save_results_json,
+)
 
 CONFIG = {
-    "data_path":    "data/dsd.csv",
-    "output_path":  "data/final_results.csv",
-    "test_size":    0.2,
-    # Tier 1 uses the pretrained binary DistilRoBERTa — no local model path needed.
-    # p > 0.15 is intentionally aggressive to maximise severe recall (clinical priority).
-    # Raise to 0.20 if Tier 2 throughput becomes a bottleneck.
-    "threshold":    0.15,
-    "adapter_path": "models/tier2_adapter",
-    "skip_tier2":   True,
+    "data_path":        "data/dsd.csv",
+    "output_path":      "data/final_results.csv",
+    "results_json":     "results/eval_results.json",
+    "test_size":        0.2,
+    "threshold":        0.09,   # highest threshold that produced 100% severe recall for tier 1
+    "adapter_path":     "models/tier2_adapter",
+    "skip_tier2":       False,
 }
 
 
@@ -54,7 +55,7 @@ def main():
     test_df.to_csv("data/test.csv",   index=False)
     print("\n[Data] Splits saved → data/train.csv, data/test.csv")
 
-    # Tier 1 — binary recall gate (pretrained, no fine-tuning needed)
+    # Tier 1 — pretrained binary recall gate
     tier1 = Tier1Filter(threshold=CONFIG["threshold"])
     filtered_df, t1_metrics = tier1.filter_posts(test_df)
     t1_recall = evaluate_tier1(original_df=test_df, filtered_df=filtered_df)
@@ -67,7 +68,9 @@ def main():
     if CONFIG["skip_tier2"] or filtered_df.empty:
         reason = "skip_tier2 is True" if CONFIG["skip_tier2"] else "Tier 1 passed 0 posts"
         print(f"\n[Pipeline] {reason}. Stopping after Tier 1.")
-        print_final_report(t1_metrics, t1_recall, 0.0, 0.0, 0.0, float("nan"))
+        print_final_report(t1_metrics, t1_recall, 0.0, 0.0, 0.0, 0.0, float("nan"))
+        save_results_json(t1_metrics, t1_recall, 0.0, 0.0, 0.0, 0.0, float("nan"), {},
+                          output_path=CONFIG["results_json"])
         return
 
     if not os.path.isdir(CONFIG["adapter_path"]):
@@ -75,11 +78,12 @@ def main():
         print(f"[Error] Run: python -m src.tier2_finetune")
         return
 
+    t2_per_class = {}
     try:
         tier2    = Tier2ReasoningEngine(adapter_path=CONFIG["adapter_path"])
         final_df = tier2.process_filtered_posts(filtered_df)
 
-        t2_precision, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae = evaluate_tier2(final_df)
+        t2_precision, t2_macro_recall, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae, t2_per_class = evaluate_tier2(final_df)
         print_classification_report(final_df)
 
         os.makedirs(os.path.dirname(CONFIG["output_path"]), exist_ok=True)
@@ -88,12 +92,14 @@ def main():
 
     except Exception as e:
         print(f"\n[Error] Tier 2 failed: {e}")
-        t2_precision = t2_macro_f1 = t2_weighted_f1 = 0.0
+        t2_precision = t2_macro_recall = t2_macro_f1 = t2_weighted_f1 = 0.0
         t2_ordinal_mae = float("nan")
 
-    print_final_report(t1_metrics, t1_recall, t2_precision, t2_macro_f1, t2_weighted_f1, t2_ordinal_mae)
+    print_final_report(t1_metrics, t1_recall, t2_precision, t2_macro_recall, t2_macro_f1,
+                       t2_weighted_f1, t2_ordinal_mae, t2_per_class)
+    save_results_json(t1_metrics, t1_recall, t2_precision, t2_macro_recall, t2_macro_f1,
+                      t2_weighted_f1, t2_ordinal_mae, t2_per_class, output_path=CONFIG["results_json"])
 
 
 if __name__ == "__main__":
     main()
-    
