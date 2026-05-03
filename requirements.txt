@@ -15,3 +15,4 @@ pandas
 scikit-learn
 datasets
 huggingface_hub
+matplotlib

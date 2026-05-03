@@ -37,10 +37,10 @@ BASE_MODEL_ID = "distilbert-base-uncased"
 CONFIG = {
     "train_csv":  "data/train.csv",
     "output_dir": "models/tier1_filter",
-    "epochs":     4,       
-    "max_length": 384,    
+    "epochs":     4,   # kept at 4 epoch    
+    "max_length": 384, # lowest token length to capture the full sentence within the dataset (check_token_length.py)   
     "batch_size": 16,
-    "lr":         2e-5,
+    "lr":         2e-5, # was selected after multiple runs
 }
 
 # Per-class sampling weights — mirrors Tier 2's SAMPLE_WEIGHTS for consistency.

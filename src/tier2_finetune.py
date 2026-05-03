@@ -33,6 +33,9 @@ CONFIG = {
     "output_dir":  "models/tier2_adapter",
     "epochs":      3, # started at 4, but noticed overfitting with ideal checkpoint at epoch 3
     "max_seq_len": 384, # lowest token length to capture the full sentence within the dataset (check_token_length.py)
+    "batch_size": 4,
+    "lr": 1e-4, # was selected after multiple runs
+    "gradient_accumulation_steps": 4,
 }
 
 # Per-class sampling multipliers to counter the 72.8% minimal prior.
@@ -120,19 +123,19 @@ def finetune() -> None:
         args=TrainingArguments(
             output_dir=CONFIG["output_dir"],
             num_train_epochs=CONFIG["epochs"],
-            per_device_train_batch_size=4,
-            gradient_accumulation_steps=4,
-            learning_rate=1e-4,
+            per_device_train_batch_size=CONFIG["batch_size"],
+            gradient_accumulation_steps=CONFIG["gradient_accumulation_steps"],
+            learning_rate=CONFIG["lr"],
             fp16=True,
             logging_steps=10,
-            #save_strategy="epoch", # turned off due to computer freezing during savng checkpoints (my system is dying)
+            # turned off due to computer freezing during savng checkpoints (my computer is dying)
+            #save_strategy="epoch", 
             save_strategy="no",
             save_total_limit=1,
-            optim="paged_adamw_8bit",
+            optim="paged_adamw_8bit", # 8 bit optimizer
             warmup_ratio=0.05,
             lr_scheduler_type="cosine",
-            max_grad_norm=1.0,
-            gradient_checkpointing_kwargs={"use_reentrant": False},
+            gradient_checkpointing_kwargs={"use_reentrant": False}, # to ensure
             report_to="none",
         ),
         train_dataset=hf_dataset,
