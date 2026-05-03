@@ -55,9 +55,8 @@ def load_results(path: str) -> dict:
 
 def save(fig, name: str) -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
-    for ext in ("png", "pdf"):
-        fig.savefig(os.path.join(OUT_DIR, f"{name}.{ext}"), bbox_inches="tight")
-    print(f"  Saved: {name}.png / .pdf")
+    fig.savefig(os.path.join(OUT_DIR, f"{name}.png"), bbox_inches="tight")
+    print(f"  Saved: {name}.png")
     plt.close(fig)
 
 
