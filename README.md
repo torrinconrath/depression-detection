@@ -1,19 +1,66 @@
 # Depression Severity Detection Pipeline
 
-A two-tier cascade system for classifying depression severity in social media posts, based on the [Depression Severity Dataset (DSD)](https://huggingface.co/datasets/). Labels follow PHQ-9 aligned severity levels: **minimal → mild → moderate → severe**.
+A two-tier cascade system for classifying depression severity in social media posts, based on the [Depression Severity Dataset (DSD)](https://github.com/usmaann/Depression-Severity-Dataset). Labels follow PHQ-9 aligned severity levels: **minimal → mild → moderate → severe**.
+
+This project investigates whether a lightweight sentinel filter paired with a fine-tuned LLM reasoning engine can perform accurate, evidence-grounded severity classification from a single post — addressing the "actionality gap" in existing binary depression detection systems.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [How It Works](#how-it-works)
+- [Project Structure](#project-structure)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Dataset](#dataset)
+- [Design Decisions](#design-decisions)
+- [Evaluation Metrics](#evaluation-metrics)
+- [References](#references)
+
+---
+
+## Overview
+
+Most depression detection systems treat the task as binary (depressed / not depressed). This project instead classifies posts into four clinically meaningful severity levels and does so in a two-stage cascade that optimises for both **safety** and **compute efficiency**.
+
+The core design principle is **asymmetric risk**: missing a severe case is far more harmful than routing an extra post to the LLM. Tier 1 is therefore tuned to maximise recall of at-risk posts, not overall accuracy, and Tier 2 handles the nuanced severity distinction for everything that passes the gate.
+
+| Tier | Model | Role |
+|------|-------|------|
+| **Tier 1** | Fine-tuned DistilBERT | Recall-priority sentinel — forwards any post with P(not minimal) > 0.09 |
+| **Tier 2** | Llama 3.1-8B + QLoRA | Chain-of-thought severity classifier — assigns one of four PHQ-9 aligned labels |
 
 ---
 
 ## How It Works
 
 ```
-All posts → [Tier 1: Fine-Tuned DistilBERT Filter] → flagged posts → [Tier 2: Llama 3.1-8B + QLoRA] → severity label
-                  p(mild) + p(moderate) + p(severe) > 0.09                  chain-of-thought reasoning
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DEPRESSION SEVERITY PIPELINE                         │
+├──────────────────┬────────────────────────┬────────────────────────────┤
+│  1. DATA         │  2. FINE-TUNE          │  3. INFERENCE              │
+│                  │                        │                            │
+│  DSD (3,553      │  Tier 1:               │  Tier 1:                   │
+│  single posts)   │    DistilBERT 4-class  │    sum P(mild) +           │
+│                  │    class-weighted loss  │        P(moderate) +       │
+│  80/20           │    epochs=4, lr=2e-5   │        P(severe)           │
+│  stratified      │                        │    → forward if > 0.09     │
+│  split           │  Tier 2:               │                            │
+│                  │    Llama 3.1-8B QLoRA  │  Tier 2:                   │
+│  train.csv →     │    label-only superv.  │    CoT reasoning +         │
+│  Tier 1 + 2      │    severity sampler    │    severity label          │
+│  test.csv →      │    epochs=3, lr=1e-4   │    greedy decoding         │
+│  evaluation      │                        │                            │
+└──────────────────┴────────────────────────┴────────────────────────────┘
 ```
 
-**Tier 1** is a fine-tuned 4-class DistilBERT classifier that acts as a recall-priority sentinel gate. Rather than argmax classification, it sums the probability of the three at-risk classes (mild + moderate + severe) and forwards any post above the threshold to Tier 2. The threshold is kept low (0.09) so that severe cases are never dropped at this stage.
+**Stage 1 – Data:** The DSD dataset is split 80/20 using stratified sampling to preserve class proportions. The test set is held out entirely for evaluation — no test-set leakage at any point.
 
-**Tier 2** is a QLoRA fine-tuned Llama 3.1-8B-Instruct model that performs chain-of-thought clinical reasoning to assign one of the four severity labels to each post that passed Tier 1. The model generates its own reasoning from its pre-trained clinical knowledge — no synthetic reasoning stubs are used during training.
+**Stage 2 – Fine-Tuning:** Tier 1 fine-tunes `distilbert-base-uncased` on all four severity classes with per-class loss weights (severe: 8×) to aggressively penalise missed at-risk predictions. Tier 2 fine-tunes Llama 3.1-8B-Instruct with QLoRA and a severity-biased sampler to counteract the 72.8% minimal prior in DSD.
+
+**Stage 3 – Inference:** Tier 1 sums the probability mass across the three at-risk classes and forwards any post above the threshold. Tier 2 generates clinical chain-of-thought reasoning before emitting the final severity label, using greedy decoding for determinism.
 
 ---
 
@@ -31,7 +78,7 @@ All posts → [Tier 1: Fine-Tuned DistilBERT Filter] → flagged posts → [Tier
 │   ├── test.csv               # Auto-generated by main.py (20% stratified split)
 │   └── final_results.csv      # Tier 2 output (text, label, tier1_score, tier2_label, tier2_reasoning)
 ├── models/
-│   ├── tier1_filter/          # Fine-tuned DistilBERT classifier (produced by tier1_finetune.py)
+│   ├── tier1_filter/          # Fine-tuned DistilBERT weights (produced by tier1_finetune.py)
 │   └── tier2_adapter/         # QLoRA adapter weights (produced by tier2_finetune.py)
 ├── results/
 │   ├── eval_results.json      # Saved evaluation metrics for both tiers
@@ -42,60 +89,36 @@ All posts → [Tier 1: Fine-Tuned DistilBERT Filter] → flagged posts → [Tier
     ├── constants.py           # Shared: BASE_MODEL_ID, BASE_FILTER_ID, ORDINAL_ORDER, SYSTEM_PROMPT
     ├── data_loader.py         # CSV loading, label normalisation, stratified split, distribution printing
     ├── tier1_filter.py        # DistilBERT inference — at-risk probability gate
-    ├── tier1_finetune.py      # Fine-tunes DistilBERT on DSD with class-weighted loss (GPU optional)
-    ├── tier2_finetune.py      # QLoRA fine-tuning of Llama 3.1-8B with severity-biased sampler (GPU required)
+    ├── tier1_finetune.py      # Fine-tunes DistilBERT on DSD with class-weighted loss
+    ├── tier2_finetune.py      # QLoRA fine-tuning of Llama 3.1-8B with severity-biased sampler
     ├── tier2_llm.py           # Tier 2 inference engine — loads adapter and runs CoT classification
     └── evaluation.py          # Metrics: Tier 1 recall, Tier 2 F1/MAE, reports, JSON export
 ```
 
 ---
 
-## Dataset Format
-
-`data/dsd.csv` must have two columns:
-
-| column | description |
-|--------|-------------|
-| `text`  | Raw social media post (string) |
-| `label` | One of: `minimal`, `mild`, `moderate`, `severe` (also accepts `minimum`, normalised automatically) |
-
-**Sample data:**
-
-```csv
-text,label
-"I've been feeling really low lately, can't seem to find joy in anything I used to love. Work feels pointless.",moderate
-"Just had the best weekend hiking with friends. Feeling refreshed and motivated for the week ahead!",minimal
-"Everything feels hopeless. I haven't left my bed in three days and I don't see the point anymore.",severe
-"Had a rough few days, feeling a bit stressed about deadlines but I know it'll pass.",mild
-"Can't stop crying and I don't even know why. Called in sick again. Third time this month.",moderate
-"Went grocery shopping, cooked dinner, watched a show. Pretty normal day overall.",minimal
-"I've been thinking about how much easier it would be if I just wasn't here anymore.",severe
-"Feeling a little burnt out from work this week. Looking forward to the weekend.",mild
-```
-
-**Approximate class distribution in the full DSD dataset:**
-
-| label    | share  |
-|----------|--------|
-| minimal  | ~72.8% |
-| mild     | ~7.9%  |
-| moderate | ~11.0% |
-| severe   | ~8.3%  |
-
-The heavy class imbalance is handled by `WeightedRandomSampler` during Tier 2 fine-tuning and class-weighted loss during Tier 1 fine-tuning, with both using the same per-class multipliers (minimal: 1.0, mild: 2.5, moderate: 3.0, severe: 8.0).
-
----
-
 ## Setup
 
+### Requirements
+
+- Python 3.10+
+- NVIDIA GPU with 12GB+ VRAM for Tier 2 (tested on RTX 3080/4080 and A100)
+- Tier 1 fine-tuning and inference run on CPU if no GPU is available
+- CUDA 12.1
+
+### Installation
+
 ```bash
+# Create and activate a virtual environment
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Linux/Mac
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins PyTorch to the CUDA 12.1 build (`+cu121`), compatible with RTX 30xx/40xx cards. If you're on a different CUDA version, update the `+cu121` suffix and the `--extra-index-url` line — see [pytorch.org/get-started](https://pytorch.org/get-started/locally/).
-
-- **Tier 1 fine-tuning**: runs on CPU if no GPU is available (slower but functional).
-- **Tier 2 fine-tuning and inference**: requires a CUDA GPU with at least **12 GB VRAM** (tested on RTX 3080/4080 and A100).
+> **Note:** `requirements.txt` pins PyTorch to CUDA 12.1 wheels. If you are on a different CUDA version, update the `torch` version and `--extra-index-url` before installing. See [pytorch.org/get-started](https://pytorch.org/get-started/locally/) for the correct combination.
 
 You also need to be authenticated with Hugging Face to download Llama 3.1-8B-Instruct (gated model):
 
@@ -105,37 +128,35 @@ huggingface-cli login
 
 ---
 
-## How to Run
-
-All pipeline settings are in the `CONFIG` dict at the top of `main.py`.
+## Usage
 
 ### Step 1 — Fine-tune the Tier 1 filter
 
-Trains a 4-class DistilBERT classifier on `data/dsd.csv` with class-weighted loss. Saves to `models/tier1_filter/`.
+Trains a 4-class DistilBERT classifier on `data/dsd.csv` with class-weighted loss. GPU optional. Saves to `models/tier1_filter/`.
 
 ```bash
 python -m src.tier1_finetune
 ```
 
-### Step 2 — Generate data splits and test Tier 1
+### Step 2 — Generate data splits and verify Tier 1
 
-Set `"skip_tier2": True` in `CONFIG`, then:
+Set `"skip_tier2": True` in `main.py`'s `CONFIG`, then:
 
 ```bash
 python main.py
 ```
 
-This loads `data/dsd.csv`, produces stratified `data/train.csv` and `data/test.csv`, runs the Tier 1 filter over the test set, and prints per-class recall.
+Produces stratified `data/train.csv` and `data/test.csv`, runs Tier 1 over the test set, and prints per-class recall. Use this step to tune the threshold before committing to the expensive Tier 2 run.
 
 ### Step 3 — Fine-tune the Tier 2 LLM
 
-Requires a CUDA GPU. Reads `data/train.csv` produced in Step 2.
+Requires a CUDA GPU. Reads `data/train.csv` produced in Step 2. Saves the QLoRA adapter to `models/tier2_adapter/`.
 
 ```bash
 python -m src.tier2_finetune
 ```
 
-Saves the QLoRA adapter to `models/tier2_adapter/`. Training takes approximately 1–2 hours on a single consumer GPU (RTX 3080) with the default 3-epoch config.
+Training takes approximately 1–2 hours on a single consumer GPU (RTX 3080) with the default 3-epoch config.
 
 ### Step 4 — Run the full pipeline
 
@@ -145,7 +166,7 @@ Set `"skip_tier2": False` in `CONFIG`, then:
 python main.py
 ```
 
-Results are saved to `data/final_results.csv` (columns: `text`, `label`, `tier1_score`, `tier2_label`, `tier2_reasoning`) and evaluation metrics are written to `results/eval_results.json`.
+Results are saved to `data/final_results.csv` with columns `text`, `label`, `tier1_score`, `tier2_label`, `tier2_reasoning`. Evaluation metrics are written to `results/eval_results.json`.
 
 ### Step 5 — Generate visualisations (optional)
 
@@ -153,18 +174,18 @@ Results are saved to `data/final_results.csv` (columns: `text`, `label`, `tier1_
 python create_visuals.py
 ```
 
-Reads `results/eval_results.json` and saves two charts to `results/figures/`:
-- `tier1_recall_bar.png` — per-class recall at Tier 1
+Outputs two charts to `results/figures/`:
+- `tier1_recall_bar.png` — per-class recall at Tier 1 with a 95% clinical target line
 - `tier2_metrics_grouped_bar.png` — per-class Precision / Recall / F1 at Tier 2
 
 ---
 
-## Configuration Reference
+## Configuration
 
-All options are in the `CONFIG` dict in `main.py`:
+All settings live in the `CONFIG` dict at the top of `main.py`:
 
-| key | default | description |
-|-----|---------|-------------|
+| Parameter | Default | Description |
+|-----------|---------|-------------|
 | `data_path` | `data/dsd.csv` | Path to the input CSV |
 | `output_path` | `data/final_results.csv` | Path for Tier 2 output CSV |
 | `results_json` | `results/eval_results.json` | Path for saved evaluation metrics |
@@ -173,31 +194,70 @@ All options are in the `CONFIG` dict in `main.py`:
 | `adapter_path` | `models/tier2_adapter` | Path to the QLoRA adapter directory |
 | `skip_tier2` | `False` | Set `True` to stop after Tier 1 (useful for threshold tuning) |
 
+Tier 1 and Tier 2 fine-tuning hyperparameters live in their respective `CONFIG` dicts inside `src/tier1_finetune.py` and `src/tier2_finetune.py`.
+
+---
+
+## Dataset
+
+The [Depression Severity Dataset (DSD)](https://github.com/usmaann/Depression-Severity-Dataset) contains 3,553 Reddit posts, one per user, each labelled with a PHQ-9 aligned severity level. It is loaded from a local CSV — no automatic download.
+
+`data/dsd.csv` must have two columns:
+
+| column | description |
+|--------|-------------|
+| `text`  | Raw social media post (string) |
+| `label` | One of: `minimal`, `mild`, `moderate`, `severe` (also accepts `minimum`, normalised automatically) |
+
+**Class distribution:**
+
+| Label | Share |
+|-------|-------|
+| Minimal  | ~72.8% |
+| Mild     | ~7.9%  |
+| Moderate | ~11.0% |
+| Severe   | ~8.3%  |
+
+The heavy imbalance toward minimal is counteracted by class-weighted loss in Tier 1 and a `WeightedRandomSampler` in Tier 2, both using the same per-class multipliers (minimal: 1.0 / mild: 2.5 / moderate: 3.0 / severe: 8.0) for consistency across the pipeline.
+
 ---
 
 ## Design Decisions
 
 **Why fine-tune Tier 1 instead of using a pretrained binary classifier?**
-Using an off-the-shelf model trained on a different domain (e.g., `mrm8488/distilroberta-base-finetuned-suicide-depression`) introduces domain shift and produces miscalibrated probability estimates. Fine-tuning directly on DSD ensures the threshold $p > 0.09$ maps to the correct at-risk probability in this distribution.
+An off-the-shelf binary model trained on a different domain (e.g., a generic suicide/depression classifier) introduces domain shift and produces miscalibrated probability estimates on DSD. Fine-tuning directly on DSD ensures the threshold `p > 0.09` corresponds to the correct at-risk probability in this distribution.
 
 **Why train Tier 1 as 4-class rather than binary?**
-A strict binary model collapses the distinct linguistic profiles of mild, moderate, and severe into a single positive class. Training on all four classes with individual per-class loss penalties lets the model assign higher probabilities to severe posts, which is exactly what the at-risk sum threshold exploits.
+Collapsing mild, moderate, and severe into a single positive class loses the distinct linguistic profiles of each severity level. Training on all four classes with individual per-class loss penalties lets the model assign higher probability mass to severe posts specifically, which the at-risk sum threshold (`P(mild) + P(moderate) + P(severe) > 0.09`) directly exploits.
 
 **Why label-only supervision for Tier 2?**
-Synthetic reasoning stubs have no grounding in the actual post text. Training on them causes a train/inference mismatch where the model learns to reproduce stub patterns rather than reason from post content. Label-only supervision lets the model generate its own CoT from its pre-trained clinical knowledge, guided by the system prompt format.
+Synthetic reasoning stubs have no grounding in the actual post text. Training the model to reproduce them causes a train/inference mismatch: the model learns stub patterns rather than reasoning from post content. Label-only supervision (`Label: <Severity>` in the assistant turn) lets the model generate its own chain-of-thought from its pre-trained clinical knowledge, guided by the system prompt's `Reasoning: / Label:` format.
 
 **Why 3 epochs for Tier 2?**
-Overfitting was observed at epoch 4 during experimentation; the optimal checkpoint consistently appeared at epoch 3.
+Overfitting was observed at the epoch 4 checkpoint during experimentation. The optimal checkpoint consistently appeared at epoch 3, so `save_strategy` was left disabled and training was stopped there directly.
+
+**Why greedy decoding for Tier 2?**
+Severity classification benefits from deterministic outputs. Low-temperature sampling introduces unnecessary stochasticity without improving label accuracy, and greedy decoding is faster for single-sample inference.
 
 ---
 
 ## Evaluation Metrics
 
-| metric | what it measures |
-|--------|-----------------|
-| **Severe Recall (Tier 1)** | % of `severe` posts retained by the filter. Primary safety metric — must stay at 100%. |
-| **At-risk Recall (Tier 1)** | % of mild + moderate + severe posts retained. Secondary safety metric. |
-| **Throughput / Latency (Tier 1)** | Posts/sec and ms/post — confirms the filter is fast enough for production-scale use. |
-| **Macro F1 (Tier 2)** | F1 averaged equally across all 4 classes. Penalises failures on minority classes. |
-| **Weighted F1 (Tier 2)** | F1 weighted by class frequency. Reflects overall accuracy given the imbalance. |
-| **Ordinal MAE (Tier 2)** | Mean absolute error on the severity ordering (minimal=0, mild=1, moderate=2, severe=3). Penalises distant misclassifications more than adjacent ones. |
+| Metric | Tier | What It Measures |
+|--------|------|-----------------|
+| **Severe Recall** | Tier 1 | % of `severe` posts retained by the filter. Primary safety metric — must stay at 100%. |
+| **At-risk Recall** | Tier 1 | % of mild + moderate + severe posts retained combined. Secondary safety metric. |
+| **Throughput / Latency** | Tier 1 | Posts/sec and ms/post — confirms the filter is fast enough for production-scale use. |
+| **Macro F1** | Tier 2 | F1 averaged equally across all 4 classes. Penalises failures on minority classes. |
+| **Weighted F1** | Tier 2 | F1 weighted by class frequency. Reflects overall accuracy given the class imbalance. |
+| **Ordinal MAE** | Tier 2 | Mean absolute error on the severity ordering (minimal=0, mild=1, moderate=2, severe=3). Penalises distant misclassifications more than adjacent ones. |
+
+---
+
+## References
+
+- Naseem et al. (2022). [Early Identification of Depression Severity Levels on Reddit Using Ordinal Classification](https://dl.acm.org/doi/10.1145/3485447.3512128)
+- Li et al. (2021). [CascadeBERT: Accelerating Inference of Pre-trained Language Models via Calibrated Complete Models Cascade](https://arxiv.org/abs/2012.15468)
+- Hu et al. (2021). [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
+- Dettmers et al. (2023). [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
+- Du et al. (2024). [Improving Factuality and Reasoning in Language Models through Multiagent Debate](https://arxiv.org/abs/2305.14325)
