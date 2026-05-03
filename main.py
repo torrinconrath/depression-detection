@@ -37,7 +37,7 @@ CONFIG = {
     "threshold":        0.1,
     "tier1_model_dir":  "models/tier1_filter",
     "adapter_path":     "models/tier2_adapter",
-    "skip_tier2":       False,
+    "skip_tier2":       True,
 }
 
 

@@ -1,4 +1,6 @@
 BASE_MODEL_ID  = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+BASE_FILTER_ID = "distilbert-base-uncased"
+# BASE_FILTER_ID = "mrm8488/distilroberta-base-finetuned-suicide-depression"
 ORDINAL_ORDER  = ["minimal", "mild", "moderate", "severe"]
 
 SYSTEM_PROMPT = (

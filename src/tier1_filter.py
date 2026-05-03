@@ -1,34 +1,21 @@
 """
-tier1_filter.py — Binary Sentinel Filter (Tier 1)
+tier1_filter.py — Sentinel Filter (Tier 1)
 
-Loads the fine-tuned DistilBERT binary classifier (trained via tier1_finetune.py)
-as a recall gate. The model was fine-tuned on the DSD training split with:
-    Negative (label 0): minimal — little to no depressive signal
-    Positive (label 1): mild + moderate + severe — any at-risk signal
+Loads the fine-tuned DistilBERT classifier (trained via tier1_finetune.py)
+as a recall gate. The model was fine-tuned on the 4-class DSD training split.
 
 Design rationale:
     Tier 1's only job is to ask "might this person need attention?" and pass anything
-    uncertain to the LLM. Severity classification (minimal/mild/moderate/severe) is
-    exclusively Tier 2's responsibility.
+    uncertain to the LLM. 
 
-    A 4-class classifier at Tier 1 was considered but rejected: argmax has no threshold
-    mechanism, so a post scored [minimal=0.40, mild=0.35, moderate=0.15, severe=0.10]
-    gets silently discarded even though 60% of the probability mass sits on at-risk
-    classes. The binary model with a sub-0.5 threshold instead asks whether any
-    depressive signal is present, passing borderline cases through to the LLM.
+    Instead of relying on argmax (which silently drops posts if probability is split 
+    across mild/moderate/severe), this module sums the probability of the three 
+    "at-risk" classes. If P(mild) + P(moderate) + P(severe) > threshold, it passes 
+    to Tier 2.
 
     Fine-tuning on DSD (same domain, same distribution) rather than using a generic
-    pretrained suicide/depression model avoids two failure modes:
-      (1) Domain shift — generic models trained on crisis text may not generalise to
-          the mild/moderate language that dominates DSD's at-risk classes.
-      (2) Label misalignment — a model trained on binary depressive/non-depressive
-          labels has no concept of "minimal" as a clinical category; ours does.
-
-    Clinical class split rationale:
-      Mild is included in the positive class because mild posts share surface-level
-      language with minimal posts but represent early-onset depression where LLM
-      reasoning adds the most value. Discarding them at Tier 1 would be clinically
-      unsafe — these are exactly the borderline cases the cascade exists to handle.
+    pretrained suicide/depression model avoids domain shift and appropriately weights
+    the severe class.
 """
 
 import os
@@ -38,18 +25,16 @@ import pandas as pd
 from transformers import pipeline
 
 FINETUNED_MODEL_DIR = "models/tier1_filter"
-AT_RISK_LABEL       = "at_risk"   # id2label set during fine-tuning
 
 
 class Tier1Filter:
-    def __init__(self, threshold: float = 0.3, model_dir: str = FINETUNED_MODEL_DIR):
+    def __init__(self, threshold: float = 0.10, model_dir: str = FINETUNED_MODEL_DIR):
         """
         Args:
-            threshold: minimum at-risk probability to pass a post to Tier 2.
-                       Lower = higher recall (fewer at-risk posts missed).
-                       Default 0.3 is conservative; fine-tuned model is well-calibrated
-                       on DSD so a higher threshold is viable if precision matters more.
-            model_dir: path to the fine-tuned binary classifier saved by tier1_finetune.py.
+            threshold: minimum summed at-risk probability to pass a post to Tier 2.
+                       Since the model predicts 4 classes, this threshold looks at 
+                       P(mild) + P(moderate) + P(severe).
+            model_dir: path to the fine-tuned classifier saved by tier1_finetune.py.
         """
         self.threshold = threshold
 
@@ -60,32 +45,36 @@ class Tier1Filter:
             )
 
         device = 0 if torch.cuda.is_available() else -1
-        print(f"[Tier 1] Loading fine-tuned binary classifier from '{model_dir}'")
+        print(f"[Tier 1] Loading fine-tuned classifier from '{model_dir}'")
         self.classifier = pipeline(
             "text-classification",
             model=model_dir,
             device=device,
             truncation=True,
             max_length=256,
+            top_k=None,  # CRITICAL: Forces pipeline to return scores for all 4 classes
         )
         print(
             f"[Tier 1] Ready on {'GPU' if device == 0 else 'CPU'}. "
-            f"Threshold: p(at_risk) > {threshold}"
+            f"Threshold: P(not minimal) > {threshold}"
         )
 
-    def _at_risk_prob(self, result: dict) -> float:
-        """Return the probability assigned to the at-risk (positive) class."""
-        if result["label"] == AT_RISK_LABEL:
-            return result["score"]
-        return 1.0 - result["score"]
+    def _at_risk_prob(self, result: list) -> float:
+        """Sum the probabilities of mild, moderate, and severe."""
+        # result is a list of dicts: [{'label': 'mild', 'score': 0.4}, ...]
+        at_risk_prob = 0.0
+        for class_score in result:
+            if class_score["label"] != "minimal":
+                at_risk_prob += class_score["score"]
+        return at_risk_prob
 
     def filter_posts(self, df: pd.DataFrame, batch_size: int = 32) -> tuple[pd.DataFrame, dict]:
         """
-        Run binary classification on all posts and return those above the threshold.
+        Run classification on all posts and return those above the at-risk threshold.
 
         Returns:
             filtered_df: subset of df that passed the threshold, with a 'tier1_score'
-                         column containing the raw at-risk probability.
+                         column containing the summed at-risk probability.
             metrics:     dict of throughput / latency / reduction statistics.
         """
         texts      = df["text"].tolist()

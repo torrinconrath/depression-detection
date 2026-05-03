@@ -1,16 +1,14 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score
-from src.constants import ORDINAL_ORDER
-
-BINARY_MODEL = "mrm8488/distilroberta-base-finetuned-suicide-depression"
+from src.constants import ORDINAL_ORDER, BASE_FILTER_ID
 
 
 def evaluate_tier1(original_df: pd.DataFrame, filtered_df: pd.DataFrame) -> dict:
     """
     Per-class recall at Tier 1.
 
-    Clinical priority order:
+    Clinical priority order:f
       severe   — must be retained; these users need urgent intervention
       moderate — important to retain; may need support
       mild     — useful to retain; early intervention opportunity
@@ -79,7 +77,7 @@ def print_final_report(
     print("=" * w)
 
     print(f"\n[Tier 1 — Binary Sentinel Filter]")
-    print(f"  Model              : {BINARY_MODEL}")
+    print(f"  Model              : {BASE_FILTER_ID}")
     print(f"  Mode               : Binary (depressive / non-depressive)")
     print(f"  Threshold          : p > {t1_metrics['threshold']:.2f}  (recall-priority gate)")
     print(f"  Posts In / Out     : {t1_metrics['original_count']} → {t1_metrics['passed_count']}")
