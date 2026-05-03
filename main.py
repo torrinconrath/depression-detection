@@ -34,7 +34,7 @@ CONFIG = {
     "output_path":      "data/final_results.csv",
     "results_json":     "results/eval_results.json",
     "test_size":        0.2,
-    "threshold":        0.09,   # highest threshold that produced 100% severe recall
+    "threshold":        0.09,   # highest threshold that produced 100% severe recall for tier 1
     "adapter_path":     "models/tier2_adapter",
     "skip_tier2":       False,
 }
@@ -103,4 +103,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
