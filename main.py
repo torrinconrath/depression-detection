@@ -30,10 +30,10 @@ from src.evaluation import (
 )
 
 CONFIG = {
-    "data_path":        "data/dsd.csv",
+    "data_path":        "data/dsd.csv", # The dataset was downloaded from Github, renamed to dsd.csv and full in a data folder
     "output_path":      "data/final_results.csv",
-    "results_json":     "results/eval_results.json",
-    "test_size":        0.2,
+    "results_json":     "results/eval_results.json", # result json for referencing and visualations
+    "test_size":        0.2, # 80/20 train/test split
     "threshold":        0.09,   # highest threshold that produced 100% severe recall for tier 1
     "adapter_path":     "models/tier2_adapter",
     "skip_tier2":       False,
